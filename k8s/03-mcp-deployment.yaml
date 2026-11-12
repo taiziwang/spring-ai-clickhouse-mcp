@@ -1,0 +1,99 @@
+# ============================================================================
+# MCP 服务（spring-ai-clickhouse-mcp:1.0.0）
+#
+# 关键点：
+#   1. 探针分工是刻意的 ——
+#        readiness → /health   （它会真实探测 ClickHouse；503 就表示「别给我流量」）
+#        liveness  → tcpSocket （只看进程活没活）
+#      ⚠️ 不能让 liveness 用 /health：ClickHouse 挂掉时 /health 返回 503，
+#         kubelet 会误判「进程死了」并把好好的 Pod 反复重启，故障被放大。
+#   2. 只读文件系统 + /tmp 空目录：
+#      Java/Tomcat 需要写临时文件（Tomcat 的 basedir、JVM 的 hsperfdata 等），
+#      readOnlyRootFilesystem 下必须单独挂一个可写的 /tmp。
+#   3. 非 root 运行：镜像内就是 uid 10001，这里显式声明，配合 PSA/K8s 策略。
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ckmcp
+  namespace: ckmcp
+  labels:
+    app: ckmcp
+    component: mcp
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: ckmcp
+      component: mcp
+  template:
+    metadata:
+      labels:
+        app: ckmcp
+        component: mcp
+      annotations:
+        # 改 ConfigMap/Secret 后想让 Pod 自动滚一次，可以用这一行（手动触发也行）：
+        #   kubectl rollout restart deployment/ckmcp -n ckmcp
+        description: "ClickHouse MCP server (Streamable HTTP)"
+    spec:
+      # MCP 服务是无状态的（查询计数只在进程内），可以随意扩缩容；
+      # 但连接池是按副本各自算的，扩副本前先确认 ClickHouse 侧的并发配额。
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          image: spring-ai-clickhouse-mcp:1.0.0
+          # 本地构建的镜像，不推仓库；集群节点上没有就会 ImagePullBackOff
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: ckmcp-config
+            - secretRef:
+                name: ckmcp-secret
+          # ---- 探针：见文件头注释，liveness 不能用 /health ----
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30      # 最多等 60s 让 JVM 起来
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3       # ClickHouse 不可达 → 15s 后摘流量
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,29 @@
+# ============================================================================
+# stdio 模式 —— 由 MCP 客户端（IDE / CLI）拉起本进程，走 stdin/stdout 通信。
+#
+# 启用方式（任选其一）：
+#   bin/run-stdio.sh
+#   java -jar target/spring-ai-clickhouse-mcp.jar --spring.profiles.active=stdio
+#   SPRING_PROFILES_ACTIVE=stdio java -jar target/spring-ai-clickhouse-mcp.jar
+#
+# 与默认（HTTP）模式相比，**差别只在传输层** ——
+# ClickHouse 连接、连接池、限额、错误分类全部与 application.yml 共用。
+#
+# ⚠️ stdio 模式下 stdout 是协议通道，只能出现 JSON-RPC 消息。三条纪律：
+#     ① 不启动 Web 服务器   —— 否则 Tomcat 的启动输出会污染 stdout
+#     ② 关闭 banner         —— banner 默认写 stdout
+#     ③ 日志走 stderr       —— 由 logback-spring.xml 统一保证（两种模式都是）
+#
+# 适用场景：本机 IDE / CLI 类 MCP 客户端、单 Agent 独占使用、不需要常驻服务。
+# 不适用：多个 Agent 共享 —— 那种场景请用默认的 Streamable HTTP。
+# ============================================================================
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+
+  ai:
+    mcp:
+      server:
+        # 启用 stdio 传输（默认 false）
+        stdio: true

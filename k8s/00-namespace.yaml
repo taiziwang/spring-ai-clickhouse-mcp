@@ -1,0 +1,12 @@
+# ============================================================================
+# 命名空间：ckmcp
+#
+# 所有资源（ClickHouse、MCP 服务、ConfigMap/Secret、Service）都放在这个命名空间里，
+# 互相用 Service 短名访问（集群 DNS：<svc>.<ns>.svc.cluster.local）。
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ckmcp
+  labels:
+    app: ckmcp

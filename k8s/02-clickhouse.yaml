@@ -1,0 +1,127 @@
+# ============================================================================
+# ClickHouse（MCP 服务的后端）
+#
+# 说明：
+#   · 这是给 MCP 服务配套的 ClickHouse 实例，只为让整套东西 apply 完就能跑。
+#     生产环境通常用外部 ClickHouse 集群（或 ClickHouse Operator / Altinity chart），
+#     那就把本文件整份删掉，改 01-config.yaml 里的 CLICKHOUSE_MCP_HOST 即可。
+#   · 数据卷用 emptyDir：Pod 重建即丢数据，仅适合验证/演示。
+#     要持久化请换成 PVC（storageClass: hostpath / local-path 之类），
+#     并把 strategy 改成 Recreate（单盘不能被两个 Pod 同时挂）。
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: ckmcp
+  labels:
+    app: ckmcp
+    component: clickhouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ckmcp
+      component: clickhouse
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ckmcp
+        component: clickhouse
+    spec:
+      # ClickHouse 镜像里的 clickhouse 用户是 uid/gid 101。
+      # fsGroup 让 emptyDir 卷对组可写，否则 Pod 会因 "Permission denied" 起不来。
+      securityContext:
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.8
+          # 本地已有该镜像，别去远端拉（离线/内网环境尤其重要）
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          env:
+            # 首次启动时创建该用户；后续重启不会覆盖已有用户
+            - name: CLICKHOUSE_USER
+              value: mcp
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ckmcp-secret
+                  key: CLICKHOUSE_PASSWORD
+            # 打开访问管理（否则 mcp 用户无法被创建/授权）
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          # /ping 是 ClickHouse 自带的轻量健康端点（返回 Ok.）
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 3
+            failureThreshold: 60      # 首次初始化可能要几十秒
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: logs
+              mountPath: /var/log/clickhouse-server
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+---
+# ClickHouse 的集群内入口：MCP 服务通过 http://clickhouse:8123 访问
+# 类型用 ClusterIP —— 只在集群内暴露，不占 NodePort，也不该让外部直连数据库。
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: ckmcp
+  labels:
+    app: ckmcp
+    component: clickhouse
+spec:
+  type: ClusterIP
+  selector:
+    app: ckmcp
+    component: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native

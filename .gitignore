@@ -1,0 +1,16 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.log
+logs/
+.idea/
+*.iml
+.vscode/settings.json
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# 后台启动脚本的 PID 与日志
+.run/

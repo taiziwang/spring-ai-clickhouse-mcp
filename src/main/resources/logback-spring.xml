@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志一律走 stderr。
+
+  为什么：stdio 模式下 stdout 是 MCP 协议通道，只能出现 JSON-RPC 消息 ——
+  往 stdout 打一行 "INFO ..." 就会让客户端的协议解析直接失败。
+  Spring Boot 默认的 ConsoleAppender 是写 stdout 的，所以必须在这里改掉。
+  HTTP 模式下走 stderr 也没有任何损失（容器同时收集两个流）。
+
+  日志级别仍由 application.yml 的 logging.level.* 控制（Boot 会应用到 logback），
+  一份配置同时服务两种传输。
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder>
+      <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+      <charset>${CONSOLE_LOG_CHARSET}</charset>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="STDERR"/>
+  </root>
+</configuration>

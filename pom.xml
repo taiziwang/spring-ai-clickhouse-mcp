@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Spring Boot 4.1.0 + Spring AI 2.0.0，与 spring-ai-hive-mcp 同基线：
+    spring-ai-starter-mcp-server-webmvc:2.0.0 的 pom 自己声明了
+    spring-boot-starter-web:4.1.0，两个版本是配套的，不需手工对齐。
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.example</groupId>
+  <artifactId>spring-ai-clickhouse-mcp</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <name>spring-ai-clickhouse-mcp</name>
+  <description>把 ClickHouse 的只读查询能力以 MCP 工具暴露给多个 Agent（Streamable HTTP），等价改写自 ClickHouse/mcp-clickhouse（Python）</description>
+
+  <properties>
+    <!--
+      JDK 基线 17：与 Spring Boot 4.1 的最低要求一致，且与本机 SDKMAN 的
+      17.0.12-tem 对齐。⚠️ release 必须与本机 JDK 一致，否则编不过。
+    -->
+    <java.version>17</java.version>
+    <spring-ai.version>2.0.0</spring-ai.version>
+
+    <!--
+      ClickHouse JDBC 驱动（官方 v2 客户端）。
+      0.10.0 是当前最新稳定版（0.11.0 仍是 rc）。
+      ⚠️ ClickHouse JDBC 走 HTTP(S) 接口（8123/8443），不是原生 TCP（9000/9440），
+         与 Python 版 mcp-clickhouse 的连接方式一致。
+    -->
+    <clickhouse-jdbc.version>0.10.0</clickhouse-jdbc.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!--
+        显式导入 Jackson 3 的 BOM，强制 tools.jackson.* 各模块版本一致。
+        父 pom 不可用/不完整时 Spring Boot 的统一管理会失效，MCP SDK 声明的
+        旧版本会胜出造成 databind/core 错配（启动炸 ExceptionInInitializerError）。
+        与 spring-ai-hive-mcp 同款防御。
+      -->
+      <dependency>
+        <groupId>tools.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>3.1.4</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- MCP Server：Streamable HTTP，由 spring.ai.mcp.server.protocol=STREAMABLE 激活 -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+    </dependency>
+
+    <!-- 连接池。只用 HikariCP，不引 spring-boot-starter-jdbc —— 避免 DataSource 自动配置掺和进来 -->
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+    </dependency>
+
+    <!--
+      内嵌 Tomcat —— 部署形态是单个可执行 fat jar。
+      显式声明是为了防止有人顺手改成 provided（fat jar 会起不来）。
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-tomcat</artifactId>
+    </dependency>
+
+    <!--
+      ===== ClickHouse JDBC（官方） =====
+
+      相比 Hive JDBC 那堆 2018 年的传递依赖，ClickHouse JDBC 0.10 的依赖图干净得多：
+      clickhouse-client / clickhouse-http-client + Apache HttpClient5 + lz4，
+      没有 javax.servlet / jetty / log4j1 这类会和 Spring Boot 4.1 打架的东西。
+      只排掉它的日志桥（如果有）之外不需要额外 exclusion。
+    -->
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-jdbc</artifactId>
+      <version>${clickhouse-jdbc.version}</version>
+    </dependency>
+
+    <!-- 单测：钉死 SQL 守卫与错误分类规则 -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- 产物：target/spring-ai-clickhouse-mcp.jar（可执行 fat jar，内嵌 Tomcat） -->
+    <finalName>spring-ai-clickhouse-mcp</finalName>
+    <plugins>
+      <!--
+        显式开启 -parameters：Spring AI 的 @ToolParam 不带 name，
+        工具入参名完全依赖反射拿到真实参数名。父 pom 失效时静默丢失，
+        改动本项后必须 mvn clean package（增量编译不会重编未改动的类）。
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <parameters>true</parameters>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.example.chmcp.ClickHouseMcpApplication</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

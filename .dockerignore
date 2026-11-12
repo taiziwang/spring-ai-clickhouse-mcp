@@ -1,0 +1,13 @@
+# 只保留 fat jar，其余构建产物不进上下文
+#
+# ⚠️ 不能直接写 `target/` —— 那会把 Dockerfile 要 COPY 的 jar 一起排除掉，
+#    构建报 "failed to compute cache key: .../target/spring-ai-clickhouse-mcp.jar: not found"，
+#    而报错位置在 COPY 行，看不出是 ignore 规则导致的。
+target/*
+!target/spring-ai-clickhouse-mcp.jar
+
+.git/
+.run/
+*.log
+.idea/
+*.iml

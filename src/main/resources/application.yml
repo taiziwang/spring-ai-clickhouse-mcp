@@ -1,0 +1,116 @@
+server:
+  # 与 Python 版 CLICKHOUSE_MCP_BIND_PORT 的默认值一致
+  port: 8000
+
+spring:
+  application:
+    name: spring-ai-clickhouse-mcp
+
+  ai:
+    mcp:
+      server:
+        name: clickhouse-mcp-server
+        version: 1.0.0
+        # 多 Agent 共享一个常驻进程 —— 这是 Streamable HTTP 的适用场景
+        protocol: STREAMABLE
+        type: SYNC
+        instructions: |
+          本服务提供对 ClickHouse 的查询能力，供数据分析使用。
+
+          使用顺序：
+            1. list_databases  —— 确认可用的库
+            2. list_tables     —— 确认目标库里的表（需要列详情时传 include_detailed_columns=true）
+            3. run_query       —— 执行 SQL 取数
+
+          约束：
+            - 默认只读：只接受单条 SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / EXISTS，
+              服务端以 readonly=1 强制，写操作会被 ClickHouse 直接拒绝
+            - ClickHouse 的库名表名【大小写敏感】
+            - 结果受行数与字节预算限制。返回 truncated=true 表示结果被截断、
+              不是全集，此时应改用聚合函数或加过滤条件重试，不要据此下结论
+            - 查询有超时限制，超时会被取消。请主动加 LIMIT、缩小时间范围
+            - 超出 JS 安全范围的整数与 DECIMAL 以字符串返回，比较时注意
+            - 工具报错会返回 { code, message, hint, retryable } 形式的 JSON，
+              请先读 hint 与 retryable 再决定下一步
+        capabilities:
+          tool: true
+          # 只暴露工具。资源和提示词用不上，关掉以减少攻击面
+          resource: false
+          prompt: false
+          completion: false
+        streamable-http:
+          mcp-endpoint: /mcp
+          keep-alive-interval: 30s
+
+# ============================================================================
+# ClickHouse 连接与限额
+#
+# ⚠️ 连接信息只从服务端配置读，绝不接受工具参数传入。
+#    口令建议用环境变量注入，不要写进本文件：
+#      export CLICKHOUSE_MCP_PASSWORD=xxxxx
+#    Spring Boot 的宽松绑定会把 CLICKHOUSE_MCP_PASSWORD 映射到 clickhouse-mcp.password。
+# ============================================================================
+clickhouse-mcp:
+  # ---- 连接（对应 Python 版 CLICKHOUSE_*） ----
+  host: localhost
+  # 0 = 按 secure 自动推导：secure=true → 8443，false → 8123
+  # ⚠️ 必须是 HTTP(S) 端口，不能用原生 TCP 9000/9440
+  port: 0
+  secure: false          # 内网部署默认关 HTTPS；对应 CLICKHOUSE_SECURE
+  verify: true           # HTTPS 时是否校验证书；自签证书场景设 false
+  username: default
+  password: ""
+  database: default
+
+  connect-timeout-ms: 30000       # CLICKHOUSE_CONNECT_TIMEOUT（秒→毫秒）
+  socket-timeout-ms: 300000       # CLICKHOUSE_SEND_RECEIVE_TIMEOUT
+
+  # ---- 访问级别（对应 CLICKHOUSE_ALLOW_WRITE_ACCESS / CLICKHOUSE_ALLOW_DROP） ----
+  # false 时 JDBC URL 会带 readonly=1，由 ClickHouse 服务端强制只读
+  allow-write-access: false
+  # 放行 DROP / TRUNCATE / ALTER / UPDATE / DELETE 等危险操作，需先开写
+  allow-drop: false
+
+  # ---- 连接池 ----
+  pool-size: 5
+  connection-timeout-ms: 10000
+  idle-timeout-ms: 600000
+  max-lifetime-ms: 1800000
+
+  # ---- 查询限额 ----
+  # 单查询墙钟超时，到点会真正 Statement.cancel()；对应 CLICKHOUSE_MCP_QUERY_TIMEOUT
+  query-timeout-ms: 30000
+
+  fetch-size: 1000
+
+  # 结果双预算：任一超限即截断并置 truncated=true
+  max-rows: 5000
+  max-bytes: 4194304        # 4 MB
+
+  # 元数据类工具的行数预算（也是 list_tables 单页大小的上限）
+  metadata-max-rows: 2000
+
+  # 结果被预算截断时的行为：
+  #   ERROR（默认）  —— 抛 QueryLimitExceeded，不返回任何数据
+  #   PARTIAL        —— 正常返回部分数据并置 truncated=true
+  #
+  # 默认选 ERROR 的理由是不对称性：截断结果被当成全集，会产出一个自信但错误的
+  # 业务结论，而且没人会察觉；报错只多花一次往返，且 retryable=true + hint
+  # 已经给出明确出路（改用聚合 / 加过滤条件 / 取 Top N）。
+  # 只对 run_query 生效；list_databases / list_tables 被截断不算失败。
+  on-truncate: ERROR
+
+  # 运维诊断工具（get_pool_status / get_server_status）。
+  # 默认开启 —— 排障时最忌讳「要先改配置重启才能看」。
+  diagnostics:
+    enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.example.chmcp: INFO
+    com.clickhouse: WARN
+    # 驱动对「确定性错误」（如 readonly 拦截、表不存在）也会重试 3 次并打完整栈，
+    # 噪音很大；错误本身已由 ClickHouseQueryExecutor 分类后记录一行日志。
+    com.clickhouse.client.api.Client: ERROR
+    com.zaxxer.hikari: WARN

@@ -1,0 +1,19 @@
+# kustomize 入口：kubectl apply -k k8s/
+#
+# 文件名前缀决定 apply 顺序（Namespace 必须最先）：
+#   00-namespace → 01-config → 02-clickhouse → 03-mcp-deployment → 04-mcp-service
+#
+# 这里不再写 commonLabels —— 每个资源自己已经带了 app: ckmcp。
+# 用 commonLabels 会把标签注入 selector，历史版本还会报 deprecated 警告，
+# 而 selector 是不可变的，一旦和现有 Deployment 的 selector 不一致就会 apply 失败。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ckmcp
+
+resources:
+  - 00-namespace.yaml
+  - 01-config.yaml
+  - 02-clickhouse.yaml
+  - 03-mcp-deployment.yaml
+  - 04-mcp-service.yaml

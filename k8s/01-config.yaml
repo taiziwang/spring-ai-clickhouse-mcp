@@ -1,0 +1,59 @@
+# ============================================================================
+# 配置与凭据
+#
+# ConfigMap = 非敏感配置（对应 docker run -e 里可以随便看的那些）
+# Secret    = 口令。注意 Secret 默认只是 base64，不是加密 —— 生产请换
+#             SealedSecrets / External Secrets / KMS 加密，别把明文提交进 Git。
+#
+# ⚠️ 环境变量名走 Spring Boot 的宽松绑定：
+#      CLICKHOUSE_MCP_HOST  →  clickhouse-mcp.host
+#      CLICKHOUSE_MCP_PASSWORD → clickhouse-mcp.password
+#    与 docker run -e 的写法完全一致，容器内外一套配置口径。
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ckmcp-config
+  namespace: ckmcp
+  labels:
+    app: ckmcp
+data:
+  # ---- MCP 服务 ----
+  SERVER_PORT: "8000"
+
+  # ---- ClickHouse 连接 ----
+  # 直接写 ClickHouse 的 Service 名，集群 DNS 会解析到它的 ClusterIP。
+  # 若要连外部/云上的 ClickHouse，改这里并把 02-clickhouse.yaml 整份删掉即可。
+  CLICKHOUSE_MCP_HOST: "clickhouse"
+  CLICKHOUSE_MCP_PORT: "8123"
+  CLICKHOUSE_MCP_SECURE: "false"
+  CLICKHOUSE_MCP_VERIFY: "true"
+  CLICKHOUSE_MCP_USERNAME: "mcp"
+  CLICKHOUSE_MCP_DATABASE: "default"
+
+  # ---- 访问级别（对应 Python 版 CLICKHOUSE_ALLOW_WRITE_ACCESS / _ALLOW_DROP）----
+  # 只读：JDBC URL 会带 readonly=1，由 ClickHouse 服务端强制
+  CLICKHOUSE_MCP_ALLOW_WRITE_ACCESS: "false"
+  CLICKHOUSE_MCP_ALLOW_DROP: "false"
+
+  # ---- 限额 ----
+  CLICKHOUSE_MCP_QUERY_TIMEOUT_MS: "30000"
+  CLICKHOUSE_MCP_MAX_ROWS: "5000"
+  CLICKHOUSE_MCP_MAX_BYTES: "4194304"
+  CLICKHOUSE_MCP_ON_TRUNCATE: "ERROR"
+  CLICKHOUSE_MCP_POOL_SIZE: "5"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ckmcp-secret
+  namespace: ckmcp
+  labels:
+    app: ckmcp
+type: Opaque
+# stringData 比 data 友好：直接写明文，apiserver 负责 base64
+stringData:
+  # MCP 服务连 ClickHouse 用的口令
+  CLICKHOUSE_MCP_PASSWORD: "mcp123"
+  # ClickHouse 自身初始化该用户时用的口令（必须与上面一致）
+  CLICKHOUSE_PASSWORD: "mcp123"
